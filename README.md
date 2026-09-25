@@ -36,6 +36,8 @@ Pendant l'ajout, un état de lancement et une barre de progression indiquent la 
 
 Le bouton **Actualiser** relit les mods Workshop après une mise à jour de leurs fichiers.
 
+Les copies affichent `[NomDuPack] Nom du mod` dans le jeu, où `NomDuPack` est le nom du dossier du pack. Les noms des originaux restent inchangés. Pour un pack déjà généré, utiliser **Préfixer les noms des copies déjà présentes** dans l'onglet **Création du pack**. Ce bouton sauvegarde les anciens fichiers sous `mod.info.before-name-prefix.bak`, conserve les IDs et le manifeste, et n'ajoute pas deux fois le même préfixe.
+
 ## Mises à jour des mods
 
 L'onglet **Mises à jour** compare les fichiers locaux à un commit Git. Git doit être installé et accessible dans le terminal. Le dossier proposé est celui des sources Workshop ; il peut être remplacé par la racine d'un autre dépôt de mods.
@@ -76,3 +78,14 @@ Chaque composant copié possède son propre `mod.info`, à la racine, dans `comm
 Le préfixage ne réécrit pas les références dans le Lua, les noms d'objets, les packs de textures, les tuiles ni les données déjà enregistrées dans une sauvegarde. Une incompatibilité non déclarée par les auteurs peut donc subsister. Les collisions de chemins `media` sont signalées comme avertissements, pas corrigées automatiquement. Désactiver les mods originaux lors du test du pack et vérifier un démarrage complet ainsi que les actions concernées dans le jeu, de préférence sur une copie de sauvegarde. Aucune validation en jeu ou en 42.21 n'est implicite.
 
 Le `workshop.txt` et l'image générés servent de point de départ local. Avant une publication sur Steam Workshop, renseigner les métadonnées et remplacer l'image provisoire.
+
+## Changelog
+
+### 2026-09-25
+
+- Noms des copies préfixés avec `[NomDuPack]` et bouton pour appliquer le préfixe aux copies existantes avec sauvegarde.
+- Paramètres persistants pour choisir le dossier source et rechercher les bibliothèques Workshop.
+- Onglet de comparaison Git des mods, avec initialisation facultative et premier état de référence.
+- Progression de génération et messages de lancement, de succès et d'erreur.
+
+L'historique détaillé est disponible dans [CHANGELOG.md](CHANGELOG.md).

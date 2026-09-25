@@ -474,7 +474,63 @@ def inspect_selection(
     return errors, warnings
 
 
-def rewrite_info(data: bytes, aliases: tuple[str, ...], mapping: dict[str, str]) -> bytes:
+def prefix_mod_name(data: bytes, pack_name: str, fallback: str) -> bytes:
+    """Prefix display names once, retaining each variant's own name."""
+    text = data.decode("utf-8-sig")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+    prefix = f"[{pack_name}] "
+    found = False
+    for index, line in enumerate(lines):
+        if "=" in line and line.split("=", 1)[0].strip() == "name":
+            value = line.split("=", 1)[1].strip() or fallback
+            lines[index] = "name=" + (value if value.startswith(prefix) else prefix + value)
+            found = True
+    if not found:
+        lines.append("name=" + prefix + fallback)
+    result = (newline.join(lines) + (newline if text.endswith(("\r", "\n")) else "")).encode("utf-8")
+    return (b"\xef\xbb\xbf" if data.startswith(b"\xef\xbb\xbf") else b"") + result
+
+
+def prefix_existing_mod_names(catalog: list[Mod], config: PackConfig) -> int:
+    errors = validate_config(config)
+    existing, problems = load_pack_components(catalog, config)
+    if errors or problems:
+        raise ValueError("\n".join(errors + problems))
+    changes: list[tuple[Path, bytes, bytes]] = []
+    for mod in existing:
+        destination = mod.destination(config)
+        if not destination.resolve().is_relative_to(config.mods_root.resolve()):
+            raise ValueError(f"Copie extérieure au pack : {destination}")
+        for info in destination.rglob("mod.info"):
+            if not info.resolve().is_relative_to(destination.resolve()):
+                raise ValueError(f"Fichier extérieur à la copie : {info}")
+            original = info.read_bytes()
+            updated = prefix_mod_name(original, config.project.name, mod.name)
+            if original != updated:
+                changes.append((info, original, updated))
+    # Prepare all backups before changing any metadata. Preserve the first backup.
+    for info, original, _ in changes:
+        backup = info.with_name("mod.info.before-name-prefix.bak")
+        if not backup.exists():
+            with backup.open("xb") as stream:
+                stream.write(original)
+    written: list[tuple[Path, bytes]] = []
+    try:
+        for info, original, updated in changes:
+            written.append((info, original))
+            info.write_bytes(updated)
+    except OSError:
+        for info, original in reversed(written):
+            info.write_bytes(original)
+        raise
+    return len(changes)
+
+
+def rewrite_info(
+    data: bytes, aliases: tuple[str, ...], mapping: dict[str, str],
+    *, pack_name: str | None = None, fallback_name: str = "",
+) -> bytes:
     text = data.decode("utf-8-sig")
     newline = "\r\n" if "\r\n" in text else "\n"
     had_final = text.endswith(("\r", "\n"))
@@ -508,7 +564,8 @@ def rewrite_info(data: bytes, aliases: tuple[str, ...], mapping: dict[str, str])
     if not any(line.startswith("incompatible=") for line in out):
         out.append("incompatible=" + ",".join("\\" + x for x in aliases))
     result = newline.join(out) + (newline if had_final else "")
-    return result.encode("utf-8")
+    encoded = result.encode("utf-8")
+    return prefix_mod_name(encoded, pack_name, fallback_name) if pack_name is not None else encoded
 
 
 def update_pack_info(data: bytes, selected: list[Mod], config: PackConfig) -> bytes:
@@ -675,7 +732,10 @@ def build(
             shutil.copytree(mod.folder, stage, symlinks=False, copy_function=copy_file)
             (stage / "common").mkdir(exist_ok=True)
             for info_file in stage.rglob("mod.info"):
-                info_file.write_bytes(rewrite_info(info_file.read_bytes(), mod.aliases, mapping))
+                info_file.write_bytes(rewrite_info(
+                    info_file.read_bytes(), mod.aliases, mapping,
+                    pack_name=config.project.name, fallback_name=mod.name,
+                ))
             if mod.variant == "racine":
                 versioned = stage / "42.20"
                 versioned.mkdir(exist_ok=True)
@@ -1136,6 +1196,15 @@ def render_pack_builder(source_root: Path | None = None) -> None:
     catalog = [Mod(**record) for record in catalog_data]
     existing, manifest_problems = load_pack_components(catalog, config)
     existing_keys = {mod.key for mod in existing}
+    st.caption(f"Les copies portent le nom affiché [{config.project.name}] Nom du mod dans le jeu.")
+    if existing:
+        if st.button("Préfixer les noms des copies déjà présentes", disabled=bool(config_errors or manifest_problems)):
+            try:
+                with st.spinner("Mise à jour des noms des copies du pack…"):
+                    count = prefix_existing_mod_names(catalog, config)
+                st.success(f"{count} fichier(s) mod.info mis à jour. Les anciens noms sont sauvegardés dans mod.info.before-name-prefix.bak.")
+            except (OSError, ValueError) as exc:
+                st.error(f"Impossible de préfixer les noms : {exc}")
     if "selected_roots" not in st.session_state:
         st.session_state["selected_roots"] = st.session_state.get("pending_mods", [])
     roots = set(st.session_state["selected_roots"])

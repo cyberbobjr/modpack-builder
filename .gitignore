@@ -19,6 +19,7 @@ __pycache__/
 **/workshop.txt
 **/batman-modpack-selection.json
 *.before-modpack-builder.bak
+*.before-name-prefix.bak
 /Zomboid/
 /Workshop/
 pz_modlist_settings.cfg
