@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 
 # Local settings and secrets
+/.modpack-builder-settings.json
 .env
 .env.*
 !.env.example

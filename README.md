@@ -4,7 +4,7 @@ Cette interface Python permet de choisir des mods installés dans le Workshop de
 
 ## Démarrage
 
-Prérequis : Python 3.10 ou plus récent et les mods source dans `D:\SteamLibrary\steamapps\workshop\content\108600`. Les chemins par défaut sont définis en haut de `batman_modpack_builder.py`.
+Prérequis : Python 3.10 ou plus récent et les mods source installés via le Workshop Steam. Leur dossier se choisit dans l'onglet **Paramètres**.
 
 Dans PowerShell, depuis `E:\modpack-builder` :
 
@@ -15,6 +15,14 @@ python run_batman_modpack.py
 ```
 
 Ouvrir ensuite <http://127.0.0.1:8501>. Garder le terminal ouvert pendant l'utilisation. Le lanceur emploie Streamlit installé dans `.batman_modpack_deps` et écoute uniquement sur l'ordinateur local.
+
+## Paramètres et recherche des mods
+
+Dans **Paramètres**, saisir le chemin du dossier `steamapps/workshop/content/108600`, puis cliquer sur **Enregistrer le dossier**. Choisir le dossier qui contient les sous-dossiers numériques Workshop, pas le dossier d'un seul mod.
+
+Le bouton **Détecter les bibliothèques Steam** recherche les installations locales usuelles et les bibliothèques déclarées par Steam. Sélectionner un résultat, puis **Utiliser ce dossier**. Si nécessaire, ouvrir **Rechercher dans un autre emplacement** pour scanner un dossier ou un disque précis. Cette recherche s'arrête après 20 000 dossiers et signale les accès refusés ; les liens et certains dossiers système sont ignorés.
+
+Le chemin est conservé entre les lancements dans `.modpack-builder-settings.json`, exclu de Git. Un changement de dossier réinitialise la sélection et la vérification, recharge le catalogue et met à jour le chemin proposé dans **Mises à jour**. Les mods source ne sont pas modifiés.
 
 ## Créer un pack
 
@@ -39,7 +47,7 @@ L'onglet **Mises à jour** compare les fichiers locaux à un commit Git. Git doi
 
 Steam doit avoir téléchargé les mises à jour avant la comparaison. Cette première version sert à examiner les changements : elle ne remplace pas les mods du pack, ne suit pas encore leur révision source dans le manifeste et ne publie rien sur GitHub. Un dépôt existant conserve son historique et son index lors de la consultation. Les futurs commits de référence restent à créer depuis Git.
 
-Les tests de ce suivi utilisent uniquement des dépôts temporaires : `python -m unittest test_mod_updates -v`.
+Les tests du suivi et des paramètres utilisent des dossiers temporaires : `python -m unittest test_mod_updates test_settings -v`.
 
 ## Structure générée
 

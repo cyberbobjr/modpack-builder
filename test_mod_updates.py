@@ -86,12 +86,13 @@ class ModUpdatesTests(unittest.TestCase):
         self.write("123/mods/Test/mod.info", "id=Test\n")
         with (
             patch.object(app, "WORKSHOP", self.root),
+            patch.object(app, "SETTINGS_FILE", self.root / "settings.json"),
             patch.object(app, "DEFAULT_WORKSHOP_ROOT", self.root / "output"),
             patch.object(app, "scan_catalog", return_value=([], [])),
             patch.object(app, "read_saved_lists", return_value={}),
         ):
             at = AppTest.from_string("import batman_modpack_builder as app\napp.main()").run()
-            self.assertEqual([tab.label for tab in at.tabs], ["Création du pack", "Mises à jour"])
+            self.assertEqual([tab.label for tab in at.tabs], ["Création du pack", "Mises à jour", "Paramètres"])
 
             def click(label: str) -> None:
                 next(button for button in at.button if button.label == label).click().run(timeout=30)

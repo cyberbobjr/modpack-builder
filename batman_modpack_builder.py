@@ -25,6 +25,7 @@ import regex as regex_engine
 
 
 WORKSHOP = Path(r"D:\SteamLibrary\steamapps\workshop\content\108600")
+SETTINGS_FILE = Path(__file__).with_name(".modpack-builder-settings.json")
 DEFAULT_WORKSHOP_ROOT = Path(r"C:\Users\cyber\Zomboid\Workshop")
 DEFAULT_PROJECT_FOLDER = "modpack-42-20"
 SAVED_LISTS_FILE = Path(r"C:\Users\cyber\Zomboid\Lua\pz_modlist_settings.cfg")
@@ -45,6 +46,7 @@ class PackConfig:
     project: Path
     prefix: str
     pack_id: str
+    source_root: Path = WORKSHOP
 
     @property
     def mods_root(self) -> Path:
@@ -63,7 +65,7 @@ def validate_config(config: PackConfig) -> list[str]:
         errors.append("modId principal invalide : utiliser des lettres ASCII, chiffres, _ ou -.")
     if not config.project.is_absolute() or config.project == Path(config.project.anchor):
         errors.append("Le dossier de destination doit être un chemin absolu vers un projet Workshop.")
-    if config.project.resolve() == WORKSHOP.resolve() or WORKSHOP.resolve() in config.project.resolve().parents:
+    if config.project.resolve() == config.source_root.resolve() or config.source_root.resolve() in config.project.resolve().parents:
         errors.append("Le projet de sortie ne peut pas se trouver dans les sources Workshop à copier.")
     if config.project.exists() and not config.project.is_dir():
         errors.append("La destination existe mais n'est pas un dossier.")
@@ -827,7 +829,7 @@ def mod_change_diff(root: Path, revision: str, row: dict[str, str]) -> str:
     return result[:64_000] + ("\n… Différence tronquée." if len(result) > 64_000 else "")
 
 
-def render_mod_updates() -> None:
+def render_mod_updates(source_root: Path | None = None) -> None:
     import streamlit as st
 
     st.subheader("Mises à jour des mods")
@@ -835,7 +837,7 @@ def render_mod_updates() -> None:
         "Compare les fichiers locaux à un état Git enregistré. Steam doit avoir téléchargé les mises à jour. "
         "Cette comparaison ne détermine pas encore quels changements ont été intégrés à chaque pack."
     )
-    root = Path(st.text_input("Dossier des mods à suivre avec Git", value=str(WORKSHOP), key="updates_root").strip())
+    root = Path(st.text_input("Dossier des mods à suivre avec Git", value=str(source_root or WORKSHOP), key="updates_root").strip())
     try:
         if not mod_repository_root(root):
             st.info("Aucun dépôt Git à la racine de ce dossier. Initialisez-le pour commencer le suivi.")
@@ -897,6 +899,170 @@ def render_mod_updates() -> None:
         st.error(f"Suivi Git impossible : {exc}")
 
 
+def load_source_settings() -> Path:
+    if not SETTINGS_FILE.exists():
+        return WORKSHOP
+    data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("source_root"), str):
+        raise ValueError("Format du fichier de paramètres invalide.")
+    root = Path(data["source_root"])
+    if not root.is_absolute():
+        raise ValueError("Le dossier enregistré doit être un chemin absolu.")
+    return root
+
+
+def save_source_settings(root: Path) -> None:
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError("Choisissez un chemin absolu vers un dossier existant.")
+    temporary = SETTINGS_FILE.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"source_root": str(root.resolve())}, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(SETTINGS_FILE)
+
+
+def steam_installation_paths() -> set[Path]:
+    steam_roots = {Path(os.environ.get("PROGRAMFILES(X86)", r"C:\Program Files (x86)")) / "Steam"}
+    if os.name == "nt":
+        import ctypes
+        import winreg
+
+        for hive, key, value in (
+            (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+        ):
+            try:
+                with winreg.OpenKey(hive, key) as handle:
+                    steam_roots.add(Path(winreg.QueryValueEx(handle, value)[0]))
+            except OSError:
+                pass
+        drives = ctypes.windll.kernel32.GetLogicalDrives()
+        for index, letter in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+            drive = Path(f"{letter}:/")
+            if drives & (1 << index) and ctypes.windll.kernel32.GetDriveTypeW(str(drive)) == 3:
+                steam_roots.update((drive / "Steam", drive / "SteamLibrary", drive / "Program Files (x86)" / "Steam"))
+    steam_roots.update((Path.home() / ".steam" / "steam", Path.home() / ".local" / "share" / "Steam"))
+    return steam_roots
+
+
+def discover_workshop_paths(steam_roots: set[Path] | None = None) -> list[Path]:
+    """Inspect Steam installation hints and library manifests, without walking disks."""
+    steam_roots = steam_installation_paths() if steam_roots is None else steam_roots
+    libraries = set(steam_roots)
+    for steam_root in steam_roots:
+        manifest = steam_root / "steamapps" / "libraryfolders.vdf"
+        try:
+            contents = manifest.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        libraries.update(Path(value.replace("\\\\", "\\")) for value in re.findall(r'"path"\s*"([^"\r\n]+)"', contents))
+    candidates = {library / "steamapps" / "workshop" / "content" / "108600" for library in libraries}
+    candidates.add(WORKSHOP)
+    return sorted({path.resolve() for path in candidates if path.is_dir()}, key=str)
+
+
+def search_workshop_paths(root: Path, *, limit: int = 20_000) -> tuple[list[Path], bool, int]:
+    """Bounded, read-only search; avoid links, system folders and Git metadata."""
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError("Choisissez un dossier de recherche existant avec un chemin absolu.")
+    found: set[Path] = set()
+    visited = 0
+    inaccessible = 0
+
+    def on_error(error: OSError) -> None:
+        nonlocal inaccessible
+        inaccessible += 1
+
+    skipped = {".git", ".batman_modpack_deps", "$recycle.bin", "system volume information", "windows", "node_modules"}
+    for directory, names, _ in os.walk(root, followlinks=False, onerror=on_error):
+        visited += 1
+        if visited > limit:
+            return sorted(found, key=str), True, inaccessible
+        current = Path(directory)
+        if current.name == "108600" and current.parent.name == "content":
+            found.add(current.resolve())
+            names[:] = []
+            continue
+        names[:] = [name for name in names if name.casefold() not in skipped and not (current / name).is_symlink()
+                    and not (getattr(os.path, "isjunction", lambda path: False)(current / name))]
+    return sorted(found, key=str), False, inaccessible
+
+
+def render_settings() -> Path:
+    import streamlit as st
+
+    if "source_root" not in st.session_state:
+        try:
+            st.session_state["source_root"] = str(load_source_settings())
+        except (OSError, ValueError) as exc:
+            st.warning(f"Paramètres illisibles : {exc}. Le chemin par défaut est proposé.")
+            st.session_state["source_root"] = str(WORKSHOP)
+    st.subheader("Dossier des mods source")
+    st.caption("Sélectionnez le dossier Workshop de Project Zomboid : steamapps/workshop/content/108600, contenant les dossiers numériques des mods.")
+    st.write(f"Dossier actif : {st.session_state['source_root']}")
+
+    def apply_root(value: str) -> None:
+        root = Path(value.strip().strip('"')).expanduser()
+        save_source_settings(root)
+        st.session_state["source_root"] = str(root.resolve())
+        st.session_state["settings_source_input"] = str(root.resolve())
+        for key in ("selected_roots", "pending_mods", "catalog_editor", "editor_scope", "inspection_key",
+                    "inspection_result", "reviewed_refs", "build_success", "updates_root", "updates_scope",
+                    "updates_changes", "import_report", "import_issues", "dependency_notice"):
+            st.session_state.pop(key, None)
+        st.session_state["settings_saved"] = True
+
+    # Callbacks run before widgets are rendered, allowing both path fields to be reset safely.
+    def save_manual() -> None:
+        try:
+            apply_root(st.session_state["settings_source_input"])
+            st.session_state.pop("settings_error", None)
+        except (OSError, ValueError) as exc:
+            st.session_state["settings_error"] = str(exc)
+
+    def save_detected() -> None:
+        try:
+            apply_root(st.session_state["settings_detected"])
+            st.session_state.pop("settings_error", None)
+        except (OSError, ValueError) as exc:
+            st.session_state["settings_error"] = str(exc)
+
+    if "settings_source_input" not in st.session_state:
+        st.session_state["settings_source_input"] = st.session_state["source_root"]
+    st.text_input("Chemin du dossier Workshop", key="settings_source_input")
+    st.button("Enregistrer le dossier", on_click=save_manual)
+    if st.session_state.pop("settings_saved", False):
+        st.success("Dossier enregistré. Le catalogue et le suivi Git utilisent ce chemin ; la sélection précédente a été réinitialisée.")
+    if st.session_state.get("settings_error"):
+        st.error(st.session_state["settings_error"])
+    if st.button("Détecter les bibliothèques Steam"):
+        try:
+            with st.spinner("Recherche des bibliothèques Steam…"):
+                st.session_state["settings_candidates"] = [str(path) for path in discover_workshop_paths()]
+        except OSError as exc:
+            st.error(f"Recherche impossible : {exc}")
+    with st.expander("Rechercher dans un autre emplacement"):
+        search_root = st.text_input("Dossier ou disque à parcourir", value=str(Path.home()))
+        st.caption("Recherche limitée à 20 000 dossiers. Les dossiers protégés et les liens sont ignorés.")
+        if st.button("Scanner cet emplacement"):
+            try:
+                with st.spinner("Recherche des dossiers Workshop de Project Zomboid…"):
+                    candidates, truncated, inaccessible = search_workshop_paths(Path(search_root.strip().strip('"')))
+                st.session_state["settings_candidates"] = [str(path) for path in candidates]
+                if truncated:
+                    st.warning("Limite de recherche atteinte. Choisissez un sous-dossier plus précis pour poursuivre.")
+                if inaccessible:
+                    st.warning(f"{inaccessible} dossier(s) inaccessible(s) ont été ignorés.")
+            except (OSError, ValueError) as exc:
+                st.error(str(exc))
+    if "settings_candidates" in st.session_state:
+        candidates = st.session_state["settings_candidates"]
+        if candidates:
+            st.selectbox("Dossiers trouvés", candidates, key="settings_detected")
+            st.button("Utiliser ce dossier", on_click=save_detected)
+        else:
+            st.info("Aucun dossier trouvé. Essayez un autre emplacement ou saisissez le chemin manuellement.")
+    return Path(st.session_state["source_root"])
+
+
 def main() -> None:
     import streamlit as st
 
@@ -912,18 +1078,21 @@ def main() -> None:
     </style>
     """, unsafe_allow_html=True)
     st.title("Créateur de modpacks Project Zomboid")
-    builder_tab, updates_tab = st.tabs(["Création du pack", "Mises à jour"])
+    builder_tab, updates_tab, settings_tab = st.tabs(["Création du pack", "Mises à jour", "Paramètres"])
+    with settings_tab:
+        source_root = render_settings()
     with updates_tab:
-        render_mod_updates()
+        render_mod_updates(source_root)
     with builder_tab:
-        render_pack_builder()
+        render_pack_builder(source_root)
 
 
-def render_pack_builder() -> None:
+def render_pack_builder(source_root: Path | None = None) -> None:
     import streamlit as st
 
+    source_root = source_root or WORKSHOP
     with st.expander("Projet et identifiants", expanded=False):
-        st.caption(f"Sources Workshop : {WORKSHOP}")
+        st.caption(f"Sources Workshop : {source_root}")
         workshop_root_text = st.text_input(
             "Dossier parent des projets Workshop",
             value=str(DEFAULT_WORKSHOP_ROOT),
@@ -945,7 +1114,7 @@ def render_pack_builder() -> None:
             "modId du pack principal", value=default_pack_id,
             key=f"pack_id_{workshop_root_text}_{project_folder}_{prefix}",
         ).strip()
-    config = PackConfig(project, prefix, pack_id)
+    config = PackConfig(project, prefix, pack_id, source_root)
     st.caption(f"Projet : {config.project} · Préfixe : {config.prefix} · modId : {config.pack_id}")
     config_errors = validate_config(config)
     if not PROJECT_FOLDER_RE.fullmatch(project_folder):
@@ -956,14 +1125,14 @@ def render_pack_builder() -> None:
         st.error(error)
 
     @st.cache_data(show_spinner="Lecture des mod.info du Workshop…")
-    def catalog_cached(schema: int) -> tuple[list[dict], list[str]]:
-        mods, warnings = scan_catalog()
+    def catalog_cached(schema: int, source_path: str) -> tuple[list[dict], list[str]]:
+        mods, warnings = scan_catalog(Path(source_path))
         return [asdict(mod) for mod in mods], warnings
 
-    catalog_data, catalog_warnings = catalog_cached(CATALOG_SCHEMA)
+    catalog_data, catalog_warnings = catalog_cached(CATALOG_SCHEMA, str(source_root))
     if any("aliases" not in record for record in catalog_data):
         catalog_cached.clear()
-        catalog_data, catalog_warnings = catalog_cached(CATALOG_SCHEMA)
+        catalog_data, catalog_warnings = catalog_cached(CATALOG_SCHEMA, str(source_root))
     catalog = [Mod(**record) for record in catalog_data]
     existing, manifest_problems = load_pack_components(catalog, config)
     existing_keys = {mod.key for mod in existing}
