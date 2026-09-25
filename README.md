@@ -24,6 +24,8 @@ Ouvrir ensuite <http://127.0.0.1:8501>. Garder le terminal ouvert pendant l'util
 4. Cliquer sur **Vérifier la sélection**. La barre de progression indique le nombre de mods dont les fichiers ont été analysés ; une sélection de plusieurs centaines de mods peut prendre du temps. La vérification signale les dépendances manquantes, les incompatibilités déclarées, les collisions d'IDs et les chemins `media` communs. Examiner les avertissements sur les références internes avant de confirmer leur prise en compte.
 5. Cliquer sur **Ajouter les mods cochés au pack**. Pour compléter le même pack plus tard, conserver son dossier, son préfixe et son `modId` principal ; les composants déjà inscrits dans le manifeste sont indiqués dans la liste.
 
+Pendant l'ajout, un état de lancement et une barre de progression indiquent la vérification, la préparation temporaire, la copie vers le pack et le contrôle final. Les fichiers arrivent dans la destination après la préparation temporaire. Un message confirme le succès avec le chemin du pack ou indique l'erreur rencontrée. Si le bouton est désactivé, un message précise l'action nécessaire.
+
 Le bouton **Actualiser** relit les mods Workshop après une mise à jour de leurs fichiers.
 
 ## Structure générée

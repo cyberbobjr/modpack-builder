@@ -581,7 +581,15 @@ def load_pack_components(catalog: list[Mod], config: PackConfig) -> tuple[list[M
     return existing, problems
 
 
-def build(selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_internal_refs: bool) -> dict:
+def build(
+    selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_internal_refs: bool,
+    progress: Callable[[float, str], None] | None = None,
+) -> dict:
+    def report(fraction: float, message: str) -> None:
+        if progress is not None:
+            progress(fraction, message)
+
+    report(0.0, "Démarrage : validation du projet…")
     config_errors = validate_config(config)
     if config_errors:
         raise ValueError("\n".join(config_errors))
@@ -592,7 +600,13 @@ def build(selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_
     if any(mod.key in existing_keys for mod in selected):
         raise ValueError("La sélection contient un mod déjà présent dans le pack.")
     all_selected = existing + selected
-    errors, warnings = inspect_selection(all_selected, catalog, config, existing_keys=existing_keys)
+    report(0.0, "Vérification des dépendances et des fichiers avant copie…")
+    errors, warnings = inspect_selection(
+        all_selected, catalog, config, existing_keys=existing_keys,
+        progress=lambda done, total: report(
+            0.25 * done / max(total, 1), f"Vérification : {done}/{total} mods analysés"
+        ),
+    )
     if warnings and not allow_internal_refs:
         errors.append("Des références internes sont signalées ; confirmer leur examen dans l'interface.")
     if errors:
@@ -638,9 +652,24 @@ def build(selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_
     with tempfile.TemporaryDirectory(prefix="batman-modpack-") as temporary:
         staging = Path(temporary)
         staged: list[tuple[Path, Path]] = []
-        for mod in selected:
+        copy_fraction = 0.25
+        copy_label = ""
+        last_copy_update = 0.0
+
+        def copy_file(source: str, destination: str) -> str:
+            nonlocal last_copy_update
+            now = time.monotonic()
+            if now - last_copy_update >= 0.2:
+                report(copy_fraction, f"{copy_label} · {Path(source).name}")
+                last_copy_update = now
+            return shutil.copy2(source, destination)
+
+        for index, mod in enumerate(selected):
+            copy_fraction = 0.25 + 0.35 * index / max(len(selected), 1)
+            copy_label = f"Préparation temporaire : {index + 1}/{len(selected)} · {mod.name}"
+            report(copy_fraction, copy_label)
             stage = staging / mod.destination(config).name
-            shutil.copytree(mod.folder, stage, symlinks=False)
+            shutil.copytree(mod.folder, stage, symlinks=False, copy_function=copy_file)
             (stage / "common").mkdir(exist_ok=True)
             for info_file in stage.rglob("mod.info"):
                 info_file.write_bytes(rewrite_info(info_file.read_bytes(), mod.aliases, mapping))
@@ -649,7 +678,7 @@ def build(selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_
                 versioned.mkdir(exist_ok=True)
                 shutil.copy2(stage / "mod.info", versioned / "mod.info")
                 if (stage / "media").is_dir():
-                    shutil.copytree(stage / "media", versioned / "media")
+                    shutil.copytree(stage / "media", versioned / "media", copy_function=copy_file)
             staged.append((stage, mod.destination(config)))
         for _, destination in staged:
             if destination.exists() or destination.resolve().parent != parent:
@@ -668,13 +697,18 @@ def build(selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_
         if not existing:
             backup.write_bytes(original_info)
         try:
-            for stage, destination in staged:
-                shutil.copytree(stage, destination)
+            for index, (stage, destination) in enumerate(staged):
+                copy_fraction = 0.60 + 0.30 * index / max(len(staged), 1)
+                copy_label = f"Copie vers le pack : {index + 1}/{len(staged)} · {selected[index].name}"
+                report(copy_fraction, copy_label)
+                shutil.copytree(stage, destination, copy_function=copy_file)
+            report(0.90, "Écriture du mod.info et du manifeste…")
             pack_info.write_bytes(new_info)
             (target / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pack_info.write_bytes(original_info)
             raise
+    report(0.95, "Vérification des fichiers générés…")
     if pack_info.read_bytes() != new_info:
         raise RuntimeError("Vérification du mod.info généré échouée")
     for mod in all_selected:
@@ -682,6 +716,7 @@ def build(selected: list[Mod], catalog: list[Mod], config: PackConfig, *, allow_
         generated_variant = choose_variant(destination)
         if generated_variant is None or read_info(generated_variant / "mod.info").get("id") != mod.new_id(config.prefix):
             raise RuntimeError(f"ID généré incorrect : {destination}")
+    report(1.0, f"Terminé : {len(selected)} mod(s) ajouté(s) dans {config.project}")
     return manifest
 
 
@@ -792,7 +827,7 @@ def main() -> None:
                 + ", ".join(f"{mod_id} ({len(choices)} copies)" for mod_id, choices in list(ambiguous.items())[:20])
             )
     if st.session_state.get("build_success"):
-        st.success(st.session_state.pop("build_success"))
+        st.success(st.session_state["build_success"])
     if catalog_warnings:
         with st.expander(f"{len(catalog_warnings)} entrées non analysées"):
             st.code("\n".join(catalog_warnings[:100]))
@@ -929,6 +964,9 @@ def main() -> None:
                     all_selected, catalog, config, existing_keys=frozenset(existing_keys),
                     progress=show_progress,
                 )
+            except Exception as exc:
+                st.session_state.pop("inspection_result", None)
+                st.error(f"Échec de la vérification : {type(exc).__name__} : {exc}")
             finally:
                 progress_bar.empty()
     inspection = st.session_state.get("inspection_result")
@@ -952,18 +990,36 @@ def main() -> None:
             "IDs de tuiles, packs, traductions et références Lua ne sont pas réécrits. "
             "Désactiver les originaux évite leurs collisions directes ; tester sur une copie de sauvegarde."
         )
+    if errors:
+        st.warning("Ajout indisponible : corrigez les erreurs ci-dessus, puis vérifiez à nouveau la sélection.")
+    elif inspection is None:
+        st.info("Ajout indisponible : cliquez d'abord sur « Vérifier la sélection ».")
+    elif warnings and not reviewed:
+        st.info("Ajout indisponible : examinez les avertissements, puis cochez la case de confirmation ci-dessus.")
     if st.button("Ajouter les mods cochés au pack", disabled=bool(inspection is None or errors or (warnings and not reviewed))):
+        st.session_state.pop("build_success", None)
+        status = st.status(f"Ajout de {len(selected)} mod(s) en cours…", expanded=True)
+        with status:
+            st.write(f"Destination : {config.project}")
+            build_progress = st.progress(0.0, text="Démarrage de la génération…")
+
+        def show_build_progress(fraction: float, message: str) -> None:
+            build_progress.progress(fraction, text=message)
+
         try:
-            result = build(selected, catalog, config, allow_internal_refs=reviewed)
+            build(selected, catalog, config, allow_internal_refs=reviewed, progress=show_build_progress)
         except Exception as exc:
-            st.error(str(exc))
+            status.update(label="Échec de l'ajout des mods", state="error", expanded=True)
+            st.error(f"Échec de la génération : {type(exc).__name__} : {exc}")
         else:
             st.session_state["pending_mods"] = []
             st.session_state["selected_roots"] = []
             st.session_state.pop("catalog_editor", None)
             st.session_state["build_success"] = (
-                f"{len(selected)} mod(s) ajouté(s). Redémarrer le jeu pour vérifier le chargement."
+                f"{len(selected)} mod(s) ajouté(s) dans {config.project}. "
+                "Redémarrer le jeu pour vérifier le chargement."
             )
+            status.update(label="Ajout terminé", state="complete")
             st.rerun()
 
 
