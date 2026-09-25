@@ -1,0 +1,29 @@
+# Local Python dependencies and environments
+/.batman_modpack_deps/
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+
+# Local settings and secrets
+.env
+.env.*
+!.env.example
+/.streamlit/secrets.toml
+/.vscode/
+/.idea/
+
+# Generated Workshop packs and personal game data
+**/Contents/
+**/workshop.txt
+**/batman-modpack-selection.json
+*.before-modpack-builder.bak
+/Zomboid/
+/Workshop/
+pz_modlist_settings.cfg
+
+# Temporary files
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
