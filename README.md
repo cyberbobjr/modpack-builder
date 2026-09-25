@@ -28,6 +28,19 @@ Pendant l'ajout, un état de lancement et une barre de progression indiquent la 
 
 Le bouton **Actualiser** relit les mods Workshop après une mise à jour de leurs fichiers.
 
+## Mises à jour des mods
+
+L'onglet **Mises à jour** compare les fichiers locaux à un commit Git. Git doit être installé et accessible dans le terminal. Le dossier proposé est celui des sources Workshop ; il peut être remplacé par la racine d'un autre dépôt de mods.
+
+1. Si le dossier ne contient pas de dépôt, cliquer sur **Initialiser Git dans ce dossier**. Aucun fichier de mod n'est modifié.
+2. Sans historique, cliquer sur **Enregistrer le premier état de référence**. Les fichiers non ignorés sont enregistrés dans un commit local. Cette opération peut prendre du temps et de l'espace disque. Elle ne permet pas de retrouver les versions antérieures.
+3. Choisir un commit parmi les 50 derniers, puis cliquer sur **Rechercher les changements**. Le tableau regroupe par mod les fichiers ajoutés, modifiés, supprimés et non suivis, y compris les changements non commités. Les fichiers ignorés non suivis sont exclus.
+4. Filtrer les mods à examiner, choisir un fichier et cliquer sur **Afficher les différences**. Les aperçus longs sont tronqués ; les renommages apparaissent comme une suppression et un ajout.
+
+Steam doit avoir téléchargé les mises à jour avant la comparaison. Cette première version sert à examiner les changements : elle ne remplace pas les mods du pack, ne suit pas encore leur révision source dans le manifeste et ne publie rien sur GitHub. Un dépôt existant conserve son historique et son index lors de la consultation. Les futurs commits de référence restent à créer depuis Git.
+
+Les tests de ce suivi utilisent uniquement des dépôts temporaires : `python -m unittest test_mod_updates -v`.
+
 ## Structure générée
 
 Avec le dossier par défaut `modpack-42-20`, le résultat ressemble à ceci :

@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import tempfile
 import time
 import zlib
@@ -720,6 +721,182 @@ def build(
     return manifest
 
 
+def run_mod_git(root: Path, *args: str, timeout: int = 60) -> str:
+    """Run Git without a shell; never change the caller's working directory."""
+    try:
+        result = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(root), *args],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError("Git est introuvable. Installez Git, puis relancez l'application.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git a dépassé le délai prévu. Réessayez ou examinez ce dépôt dans un terminal.") from exc
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or result.stdout.strip() or "La commande Git a échoué.")
+    return result.stdout
+
+
+def mod_repository_root(root: Path) -> bool:
+    """Require an explicit repository root, never silently use a parent repo."""
+    if not root.is_absolute() or not root.is_dir():
+        raise ValueError("Choisissez un chemin absolu vers un dossier de mods existant.")
+    if not (root / ".git").exists():
+        return False
+    actual = Path(run_mod_git(root, "rev-parse", "--show-toplevel").strip()).resolve()
+    if actual != root.resolve():
+        raise ValueError(f"La racine du dépôt Git est {actual}. Sélectionnez ce dossier.")
+    return True
+
+
+def initialize_mod_repository(root: Path) -> None:
+    if mod_repository_root(root):
+        return
+    # Avoid creating a nested repository within another working tree.
+    if any((parent / ".git").exists() for parent in root.parents):
+        raise ValueError("Ce dossier appartient à un dépôt parent. Choisissez sa racine pour l'examiner.")
+    run_mod_git(root, "init")
+
+
+def mod_git_revisions(root: Path) -> list[tuple[str, str]]:
+    if not mod_repository_root(root):
+        raise ValueError("Initialisez d'abord le dépôt Git.")
+    try:
+        run_mod_git(root, "rev-parse", "--verify", "HEAD")
+    except ValueError:
+        branch = run_mod_git(root, "symbolic-ref", "HEAD").strip()
+        refs = run_mod_git(root, "for-each-ref", "--format=%(refname)").splitlines()
+        if branch not in refs:
+            return []
+        raise
+    lines = run_mod_git(root, "log", "-50", "--format=%H%x09%cs %h %s").splitlines()
+    return [tuple(line.split("\t", 1)) for line in lines]
+
+
+def create_initial_mod_snapshot(root: Path) -> str:
+    if mod_git_revisions(root):
+        raise ValueError("Ce dépôt possède déjà un historique ; son état de référence est conservé.")
+    run_mod_git(root, "add", "--all", "--", ".", timeout=600)
+    run_mod_git(
+        root, "-c", "user.name=Modpack Builder", "-c", "user.email=modpack-builder@localhost",
+        "commit", "--allow-empty", "-m", "Record initial mod files", timeout=600,
+    )
+    return run_mod_git(root, "rev-parse", "HEAD").strip()
+
+
+def collect_mod_changes(root: Path, revision: str) -> list[dict[str, str]]:
+    if not mod_repository_root(root):
+        raise ValueError("Le dossier ne contient pas de dépôt Git.")
+    commit = run_mod_git(root, "rev-parse", "--verify", "--end-of-options", f"{revision}^{{commit}}").strip()
+    fields = run_mod_git(root, "diff", "--no-ext-diff", "--no-renames", "--name-status", "-z", commit, "--").split("\0")
+    changes = [(fields[i], fields[i + 1]) for i in range(0, len(fields) - 1, 2)]
+    changes.extend(
+        ("?", path) for path in run_mod_git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if path
+    )
+    states = {"A": "Ajouté", "M": "Modifié", "D": "Supprimé", "T": "Type modifié", "U": "Conflit", "?": "Non suivi"}
+    rows = []
+    for state, path in changes:
+        parts = Path(path).parts
+        # Workshop sources: <Workshop ID>/mods/<folder>/... ; pack: Contents/mods/<folder>/...
+        if "mods" in parts and parts.index("mods") + 1 < len(parts):
+            index = parts.index("mods")
+            mod = "/".join(parts[:index + 2])
+        elif (root / "mod.info").is_file():
+            mod = root.name
+        elif parts and ((root / parts[0]).is_dir() or len(parts) > 1):
+            mod = parts[0]
+        else:
+            mod = "Fichiers du dépôt"
+        rows.append({"Mod / dossier": mod, "État": states.get(state, state), "Fichier": path})
+    return sorted(rows, key=lambda row: (row["Mod / dossier"], row["Fichier"]))
+
+
+def mod_change_diff(root: Path, revision: str, row: dict[str, str]) -> str:
+    path = row["Fichier"]
+    if row["État"] == "Non suivi":
+        source = root / path
+        if not source.resolve().is_relative_to(root.resolve()) or source.is_symlink():
+            return "Aperçu indisponible pour un lien extérieur au dépôt."
+        with source.open("rb") as stream:
+            data = stream.read(64_001)
+        if b"\0" in data:
+            return "Fichier binaire ajouté (aperçu indisponible)."
+        return data[:64_000].decode("utf-8", errors="replace") + ("\n… Aperçu tronqué." if len(data) > 64_000 else "")
+    result = run_mod_git(root, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", revision, "--", f":(literal){path}")
+    return result[:64_000] + ("\n… Différence tronquée." if len(result) > 64_000 else "")
+
+
+def render_mod_updates() -> None:
+    import streamlit as st
+
+    st.subheader("Mises à jour des mods")
+    st.caption(
+        "Compare les fichiers locaux à un état Git enregistré. Steam doit avoir téléchargé les mises à jour. "
+        "Cette comparaison ne détermine pas encore quels changements ont été intégrés à chaque pack."
+    )
+    root = Path(st.text_input("Dossier des mods à suivre avec Git", value=str(WORKSHOP), key="updates_root").strip())
+    try:
+        if not mod_repository_root(root):
+            st.info("Aucun dépôt Git à la racine de ce dossier. Initialisez-le pour commencer le suivi.")
+            if st.button("Initialiser Git dans ce dossier"):
+                with st.spinner("Initialisation du dépôt Git local…"):
+                    initialize_mod_repository(root)
+                st.success("Dépôt Git initialisé. Enregistrez maintenant le premier état de référence.")
+            else:
+                return
+        revisions = mod_git_revisions(root)
+        if not revisions:
+            st.info(
+                "Aucun état de référence enregistré. Le premier enregistrement indexe les fichiers non ignorés "
+                "et crée un commit local ; il peut être long et occuper beaucoup d'espace. Les fichiers des mods restent inchangés."
+            )
+            if st.button("Enregistrer le premier état de référence"):
+                with st.spinner("Enregistrement des fichiers dans Git…"):
+                    commit = create_initial_mod_snapshot(root)
+                st.success(f"État de référence enregistré : {commit[:12]}. Les futurs changements pourront être détectés.")
+                revisions = mod_git_revisions(root)
+            else:
+                return
+        labels = dict(revisions)
+        revision = st.selectbox("Comparer les fichiers actuels à", list(labels), format_func=labels.get)
+        st.caption("Inclut les changements indexés, non indexés et les nouveaux fichiers non ignorés. Les renommages apparaissent comme suppression et ajout.")
+        scope = (str(root.resolve()), revision)
+        if st.session_state.get("updates_scope") != scope:
+            st.session_state["updates_scope"] = scope
+            st.session_state.pop("updates_changes", None)
+        if st.button("Rechercher les changements"):
+            st.session_state.pop("updates_changes", None)
+            with st.spinner("Comparaison des fichiers avec Git…"):
+                st.session_state["updates_changes"] = collect_mod_changes(root, revision)
+        changes = st.session_state.get("updates_changes")
+        if changes is None:
+            return
+        if not changes:
+            st.success("Aucun changement local par rapport à cet état de référence.")
+            return
+        groups: dict[str, int] = {}
+        for row in changes:
+            groups[row["Mod / dossier"]] = groups.get(row["Mod / dossier"], 0) + 1
+        st.write(f"{len(changes)} fichier(s) changé(s) dans {len(groups)} mod(s) ou dossier(s).")
+        st.dataframe(
+            [{"Mod / dossier": mod, "Fichiers changés": count} for mod, count in groups.items()],
+            hide_index=True, width="stretch",
+        )
+        chosen = st.multiselect("Mods à examiner", list(groups), key=f"updates_selection_{scope}")
+        rows = [row for row in changes if not chosen or row["Mod / dossier"] in chosen]
+        if not rows:
+            st.info("Aucun fichier pour ces filtres. Sélectionnez un autre mod à examiner.")
+            return
+        st.dataframe(rows, hide_index=True, width="stretch")
+        file_index = st.selectbox("Fichier à comparer", range(len(rows)), format_func=lambda index: rows[index]["Fichier"])
+        if st.button("Afficher les différences"):
+            st.code(mod_change_diff(root, revision, rows[file_index]), language="diff")
+        st.caption("Consultation uniquement : aucune copie du pack n'est remplacée et aucun changement n'est publié sur GitHub.")
+    except (ValueError, OSError) as exc:
+        st.error(f"Suivi Git impossible : {exc}")
+
+
 def main() -> None:
     import streamlit as st
 
@@ -735,6 +912,16 @@ def main() -> None:
     </style>
     """, unsafe_allow_html=True)
     st.title("Créateur de modpacks Project Zomboid")
+    builder_tab, updates_tab = st.tabs(["Création du pack", "Mises à jour"])
+    with updates_tab:
+        render_mod_updates()
+    with builder_tab:
+        render_pack_builder()
+
+
+def render_pack_builder() -> None:
+    import streamlit as st
+
     with st.expander("Projet et identifiants", expanded=False):
         st.caption(f"Sources Workshop : {WORKSHOP}")
         workshop_root_text = st.text_input(
