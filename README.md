@@ -18,8 +18,8 @@ Ouvrir ensuite <http://127.0.0.1:8501>. Garder le terminal ouvert pendant l'util
 
 ## Créer un pack
 
-1. Ouvrir **Projet et identifiants**. Le dossier parent proposé est `C:\Users\cyber\Zomboid\Workshop`. Donner un nom de dossier différent à chaque pack ; le préfixe des copies et le `modId` principal sont proposés à partir de ce nom et restent modifiables.
-2. Rechercher un mod par **nom**, **modId** ou **ID Workshop**, puis cocher **Ajouter**. Le filtre se met à jour pendant la saisie. Le `modId` est un lien vers la page Steam Workshop du mod, ouverte dans un nouvel onglet ; un premier clic peut sélectionner la cellule du tableau. Les dépendances déclarées avec `require=` sont cochées récursivement. On peut aussi importer les favoris ou une liste nommée depuis `C:\Users\cyber\Zomboid\Lua\pz_modlist_settings.cfg` ; le fichier est seulement lu. Les IDs absents ou ambigus sont signalés.
+1. Ouvrir **Projet et identifiants**. Le dossier parent proposé est `C:\Users\<utilisateur>\Zomboid\Workshop`. Donner un nom de dossier différent à chaque pack ; le préfixe des copies et le `modId` principal sont proposés à partir de ce nom et restent modifiables.
+2. Rechercher un mod par **nom**, **modId** ou **ID Workshop**, puis cocher **Ajouter**. Le filtre se met à jour pendant la saisie. Le `modId` est un lien vers la page Steam Workshop du mod, ouverte dans un nouvel onglet ; un premier clic peut sélectionner la cellule du tableau. Les dépendances déclarées avec `require=` sont cochées récursivement. On peut aussi importer les favoris ou une liste nommée depuis `C:\Users\<utilisateur>\Zomboid\Lua\pz_modlist_settings.cfg` ; le fichier est seulement lu. Les IDs absents ou ambigus sont signalés.
 3. Examiner les colonnes **Incompatibles déclarés** et **Conflit avec sélection**. L'interface repère les paires déclarées incompatibles dans le `mod.info` actif, y compris lorsqu'un seul des deux mods déclare le conflit.
 4. Cliquer sur **Vérifier la sélection**. La barre de progression indique le nombre de mods dont les fichiers ont été analysés ; une sélection de plusieurs centaines de mods peut prendre du temps. La vérification signale les dépendances manquantes, les incompatibilités déclarées, les collisions d'IDs et les chemins `media` communs. Examiner les avertissements sur les références internes avant de confirmer leur prise en compte.
 5. Cliquer sur **Ajouter les mods cochés au pack**. Pour compléter le même pack plus tard, conserver son dossier, son préfixe et son `modId` principal ; les composants déjà inscrits dans le manifeste sont indiqués dans la liste.
@@ -31,7 +31,7 @@ Le bouton **Actualiser** relit les mods Workshop après une mise à jour de leur
 Avec le dossier par défaut `modpack-42-20`, le résultat ressemble à ceci :
 
 ```text
-C:\Users\cyber\Zomboid\Workshop\modpack-42-20\
+C:\Users\<utilisateur>\Zomboid\Workshop\modpack-42-20\
 ├── workshop.txt
 ├── preview.png
 └── Contents\mods\
