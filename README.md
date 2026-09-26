@@ -51,6 +51,19 @@ Steam doit avoir téléchargé les mises à jour avant la comparaison. Cette pre
 
 Les tests du suivi et des paramètres utilisent des dossiers temporaires : `python -m unittest test_mod_updates test_settings -v`.
 
+## Détection des conflits
+
+L'onglet **Conflits** analyse en lecture seule les fichiers Lua et les scripts des mods, dans les dossiers réellement chargés (`common` et la variante choisie pour 42.20.4). Choisir **Sélection du pack** pour analyser les composants du pack et les mods cochés, ou **Choix manuel** pour comparer des mods du catalogue, puis cliquer sur **Analyser les conflits**. En choix manuel, le catalogue s'affiche dans un tableau comme dans **Création du pack** : recherche par nom, modId ou ID Workshop, colonne **Analyser** à cocher, filtre **Cochés uniquement**, et boutons **Cocher la sélection du pack** et **Tout décocher**.
+
+| Gravité | Type | Signification |
+| --- | --- | --- |
+| Élevée | Fonction Lua redéfinie | Plusieurs mods remplacent la même fonction globale et au moins l'un d'eux n'appelle pas l'original : selon l'ordre de chargement, une modification est perdue. |
+| Élevée | Fichier Lua remplacé | Plusieurs mods fournissent le même fichier `media/lua/...` : seul le dernier chargé est exécuté. |
+| Moyenne | Définition de script en double | Le même objet, la même recette (`craftRecipe`) ou le même véhicule est défini par plusieurs mods : la dernière définition chargée l'emporte. |
+| Faible | Fonction Lua redéfinie | Chaque mod conserve une référence à la fonction d'origine : le chaînage est normalement compatible. |
+
+Les ajouts à des événements (`Events.X.Add`) ne sont pas signalés, car ils se cumulent. L'analyse repose sur des motifs textuels : elle peut manquer des surcharges dynamiques ou signaler des cas sans effet réel. Elle ne modifie aucun fichier et ne remplace pas un test en jeu. Tests : `python -m unittest test_mod_conflicts -v`.
+
 ## Structure générée
 
 Avec le dossier par défaut `modpack-42-20`, le résultat ressemble à ceci :
@@ -80,6 +93,10 @@ Le préfixage ne réécrit pas les références dans le Lua, les noms d'objets, 
 Le `workshop.txt` et l'image générés servent de point de départ local. Avant une publication sur Steam Workshop, renseigner les métadonnées et remplacer l'image provisoire.
 
 ## Changelog
+
+### 2026-09-26
+
+- Onglet **Conflits** : détection statique des fonctions Lua redéfinies, des fichiers Lua remplacés et des définitions de script en double entre mods.
 
 ### 2026-09-25
 

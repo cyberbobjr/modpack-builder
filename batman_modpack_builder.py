@@ -23,6 +23,8 @@ from typing import Callable
 
 import regex as regex_engine
 
+import mod_conflicts
+
 
 WORKSHOP = Path(r"D:\SteamLibrary\steamapps\workshop\content\108600")
 SETTINGS_FILE = Path(__file__).with_name(".modpack-builder-settings.json")
@@ -959,6 +961,158 @@ def render_mod_updates(source_root: Path | None = None) -> None:
         st.error(f"Suivi Git impossible : {exc}")
 
 
+def active_roots(mod: Mod) -> list[Path]:
+    """Folders the game loads for a mod, lowest precedence first."""
+    variant = choose_variant(mod.folder)
+    roots = dict.fromkeys(root for root in (mod.folder / "common", variant) if root is not None and root.is_dir())
+    return list(roots)
+
+
+def analyse_conflicts(
+    mods: list[Mod], *, workers: int = 4, progress: Callable[[int, int], None] | None = None,
+) -> tuple[list[mod_conflicts.Conflict], list[str]]:
+    items = [(f"{mod.name} ({mod.mod_id})", mod.folder, active_roots(mod)) for mod in mods]
+    footprints = mod_conflicts.scan_footprints(items, workers=workers, progress=progress)
+    errors = [error for footprint in footprints for error in footprint.errors]
+    return mod_conflicts.find_conflicts(footprints), errors
+
+
+def toggle_checked(visible: list[Mod], edited: list[dict], checked: set[str], column: str) -> set[str]:
+    """Apply a data editor's checkbox column to a selection, returning a new set."""
+    updated = set(checked)
+    for mod, row in zip(visible, edited):
+        if row[column]:
+            updated.add(mod.key)
+        else:
+            updated.discard(mod.key)
+    return updated
+
+
+def render_conflict_selection(catalog: list[Mod], pack_keys: set[str]) -> list[Mod]:
+    """Catalog table with the same search and checkbox mechanism as the builder tab."""
+    import streamlit as st
+
+    catalog_keys = {mod.key for mod in catalog}
+    checked = set(st.session_state.get("conflicts_manual", [])) & catalog_keys
+
+    def set_checked(keys: set[str]) -> None:
+        st.session_state["conflicts_manual"] = sorted(keys)
+        st.session_state.pop("conflicts_editor", None)
+
+    filter_col, checked_col, pack_col, clear_col = st.columns([5, 2, 2, 1], vertical_alignment="bottom")
+    with filter_col:
+        query = st.text_input(
+            "Rechercher : nom, modId ou ID Workshop", type="search", live="250ms", key="conflicts_query"
+        ).strip()
+    with checked_col:
+        only_checked = st.checkbox("Cochés uniquement", key="conflicts_only_checked")
+    with pack_col:
+        st.button("Cocher la sélection du pack", disabled=not pack_keys,
+                  on_click=set_checked, args=(checked | (pack_keys & catalog_keys),))
+    with clear_col:
+        st.button("Tout décocher", disabled=not checked, on_click=set_checked, args=(set(),))
+    visible = [mod for mod in catalog if (not only_checked or mod.key in checked) and matches_search(mod, query)]
+    st.caption(f"{len(visible)} résultat(s) affiché(s) sur {len(catalog)} mods indexés.")
+    editor_scope = (query, only_checked)
+    if st.session_state.get("conflicts_editor_scope") != editor_scope:
+        st.session_state.pop("conflicts_editor", None)
+        st.session_state["conflicts_editor_scope"] = editor_scope
+    rows = [
+        {"Analyser": mod.key in checked,
+         "État": "Sélection du pack" if mod.key in pack_keys else "Disponible",
+         "Nom": mod.name, "modId": workshop_mod_link(mod), "Workshop ID": mod.workshop_id,
+         "Variante": mod.variant, "versionMin": mod.version_min,
+         "Incompatibles déclarés": ", ".join(mod.incompatible),
+         "Autres IDs de version": ", ".join(alias for alias in mod.aliases if alias != mod.mod_id),
+         "Dossier": mod.folder.name} for mod in visible
+    ]
+    edited = st.data_editor(
+        rows, hide_index=True, width="stretch", height=430, key="conflicts_editor",
+        column_config={
+            "Analyser": st.column_config.CheckboxColumn("Analyser", default=False, pinned=True),
+            "modId": st.column_config.LinkColumn(
+                "modId", display_text=r"#modid=(.*)$", width="medium",
+                help="Ouvrir la page Steam Workshop dans un nouvel onglet ; un premier clic peut sélectionner la cellule.",
+            ),
+        },
+        disabled=[key for key in rows[0] if key != "Analyser"] if rows else False,
+    )
+    updated = toggle_checked(visible, edited, checked, "Analyser")
+    if updated != checked:
+        set_checked(updated)
+        st.rerun()
+    st.caption(f"{len(checked)} mod(s) coché(s) pour l'analyse.")
+    return [mod for mod in catalog if mod.key in checked]
+
+
+def render_conflicts(catalog: list[Mod], pack_mods: list[Mod]) -> None:
+    import streamlit as st
+
+    st.subheader("Détection des conflits")
+    st.caption(
+        "Analyse statique en lecture seule des fichiers Lua et des scripts : fonctions globales redéfinies, "
+        "fichiers Lua au même chemin, objets et recettes définis plusieurs fois. Résultat indicatif, "
+        "à confirmer en jeu."
+    )
+    source = st.radio("Mods à analyser", ["Sélection du pack", "Choix manuel"], horizontal=True, key="conflicts_source")
+    if source == "Sélection du pack":
+        mods = pack_mods
+        st.caption(f"{len(mods)} mod(s) : composants du pack et mods cochés dans « Création du pack ».")
+    else:
+        mods = render_conflict_selection(catalog, {mod.key for mod in pack_mods})
+    if len(mods) < 2:
+        st.info("Sélectionnez au moins deux mods pour rechercher des conflits.")
+        return
+    scope = tuple(sorted(mod.key for mod in mods))
+    if st.session_state.get("conflicts_scope") != scope:
+        st.session_state["conflicts_scope"] = scope
+        st.session_state.pop("conflicts_result", None)
+    if st.button("Analyser les conflits"):
+        progress_bar = st.progress(0.0, text=f"Analyse : 0/{len(mods)} mods")
+
+        def show_progress(done: int, total: int) -> None:
+            progress_bar.progress(done / total, text=f"Analyse : {done}/{total} mods")
+
+        try:
+            st.session_state["conflicts_result"] = analyse_conflicts(mods, progress=show_progress)
+        except Exception as exc:
+            st.session_state.pop("conflicts_result", None)
+            st.error(f"Échec de l'analyse : {type(exc).__name__} : {exc}")
+        finally:
+            progress_bar.empty()
+    result = st.session_state.get("conflicts_result")
+    if result is None:
+        return
+    conflicts, errors = result
+    if errors:
+        with st.expander(f"{len(errors)} fichier(s) non analysé(s)"):
+            st.code("\n".join(errors[:150]))
+    if not conflicts:
+        st.success("Aucun conflit détecté entre ces mods.")
+        return
+    columns = st.columns(len(mod_conflicts.SEVERITY_ORDER))
+    for column, severity in zip(columns, mod_conflicts.SEVERITY_ORDER):
+        column.metric(f"Gravité {severity.lower()}", sum(item.severity == severity for item in conflicts))
+    severities = st.multiselect("Gravité", mod_conflicts.SEVERITY_ORDER, default=mod_conflicts.SEVERITY_ORDER[:2])
+    kinds = sorted({item.kind for item in conflicts})
+    chosen_kinds = st.multiselect("Type", kinds, default=kinds)
+    shown = [item for item in conflicts if item.severity in severities and item.kind in chosen_kinds]
+    st.caption(f"{len(shown)} conflit(s) affiché(s) sur {len(conflicts)}.")
+    st.dataframe(
+        [{"Gravité": item.severity, "Type": item.kind, "Cible": item.target,
+          "Mods": " ↔ ".join(item.mods), "Emplacements": "\n".join(item.details)} for item in shown],
+        hide_index=True, width="stretch", height=430,
+    )
+    with st.expander("Lire les résultats"):
+        st.caption(
+            "Élevée : une fonction est remplacée sans appeler l'original, ou un fichier Lua en masque un autre ; "
+            "selon l'ordre de chargement, les modifications d'un mod sont perdues. "
+            "Moyenne : le dernier mod chargé remplace la définition de script. "
+            "Faible : chaque mod conserve l'original, le chaînage est normalement compatible. "
+            "Les ajouts à des événements (Events.X.Add) ne sont pas signalés : ils se cumulent sans conflit."
+        )
+
+
 def load_source_settings() -> Path:
     if not SETTINGS_FILE.exists():
         return WORKSHOP
@@ -1066,7 +1220,9 @@ def render_settings() -> Path:
         st.session_state["settings_source_input"] = str(root.resolve())
         for key in ("selected_roots", "pending_mods", "catalog_editor", "editor_scope", "inspection_key",
                     "inspection_result", "reviewed_refs", "build_success", "updates_root", "updates_scope",
-                    "updates_changes", "import_report", "import_issues", "dependency_notice"):
+                    "updates_changes", "import_report", "import_issues", "dependency_notice",
+                    "conflicts_manual", "conflicts_scope", "conflicts_result", "conflicts_editor",
+                    "conflicts_editor_scope", "conflicts_query", "conflicts_only_checked"):
             st.session_state.pop(key, None)
         st.session_state["settings_saved"] = True
 
@@ -1138,16 +1294,21 @@ def main() -> None:
     </style>
     """, unsafe_allow_html=True)
     st.title("Créateur de modpacks Project Zomboid")
-    builder_tab, updates_tab, settings_tab = st.tabs(["Création du pack", "Mises à jour", "Paramètres"])
+    builder_tab, conflicts_tab, updates_tab, settings_tab = st.tabs(
+        ["Création du pack", "Conflits", "Mises à jour", "Paramètres"]
+    )
     with settings_tab:
         source_root = render_settings()
     with updates_tab:
         render_mod_updates(source_root)
     with builder_tab:
-        render_pack_builder(source_root)
+        catalog, pack_mods = render_pack_builder(source_root)
+    with conflicts_tab:
+        render_conflicts(catalog, pack_mods)
 
 
-def render_pack_builder(source_root: Path | None = None) -> None:
+def render_pack_builder(source_root: Path | None = None) -> tuple[list[Mod], list[Mod]]:
+    """Render the builder tab; return the catalog and the pack's current and pending mods."""
     import streamlit as st
 
     source_root = source_root or WORKSHOP
@@ -1354,7 +1515,7 @@ def render_pack_builder(source_root: Path | None = None) -> None:
     selected = [indexed[key] for key in sorted(pending)]
     if not selected:
         st.caption("Cochez « Ajouter » pour préparer un modpack.")
-        return
+        return catalog, selected_now
     with st.expander(f"Détails des {len(selected)} mods sélectionnés"):
         st.dataframe(
             [{"Nom": m.name, "ID original": workshop_mod_link(m), "ID généré": m.new_id(config.prefix),
@@ -1446,6 +1607,7 @@ def render_pack_builder(source_root: Path | None = None) -> None:
             )
             status.update(label="Ajout terminé", state="complete")
             st.rerun()
+    return catalog, selected_now
 
 
 if __name__ == "__main__":

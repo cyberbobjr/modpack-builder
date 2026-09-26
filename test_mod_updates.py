@@ -92,7 +92,7 @@ class ModUpdatesTests(unittest.TestCase):
             patch.object(app, "read_saved_lists", return_value={}),
         ):
             at = AppTest.from_string("import batman_modpack_builder as app\napp.main()").run()
-            self.assertEqual([tab.label for tab in at.tabs], ["Création du pack", "Mises à jour", "Paramètres"])
+            self.assertEqual([tab.label for tab in at.tabs], ["Création du pack", "Conflits", "Mises à jour", "Paramètres"])
 
             def click(label: str) -> None:
                 next(button for button in at.button if button.label == label).click().run(timeout=30)
@@ -102,7 +102,7 @@ class ModUpdatesTests(unittest.TestCase):
             click("Enregistrer le premier état de référence")
             self.write("123/mods/Test/mod.info", "id=Test\nname=Updated\n")
             click("Rechercher les changements")
-            self.assertEqual(len(at.tabs[1].dataframe), 2)
+            self.assertEqual(len(at.tabs[2].dataframe), 2)
             click("Afficher les différences")
             self.assertIn("+name=Updated", at.code[0].value)
 

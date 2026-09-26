@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-26
+
+### Détection des conflits
+
+- Nouvel onglet **Conflits** : analyse en lecture seule des composants du pack et des mods cochés, ou d'un choix manuel dans le catalogue. Le choix manuel utilise le même tableau que la création du pack (recherche, cases à cocher, filtre des mods cochés), avec des boutons pour cocher la sélection du pack ou tout décocher.
+- Fonctions Lua globales redéfinies par plusieurs mods, avec distinction entre remplacement sans appel de l'original (gravité élevée) et chaînage (gravité faible).
+- Fichiers `media/lua` fournis par plusieurs mods, dont seul le dernier chargé est exécuté.
+- Objets, recettes `craftRecipe` et véhicules définis plusieurs fois dans les scripts.
+- Seuls les dossiers chargés pour 42.20.4 sont analysés (`common` et variante retenue). Les ajouts à des événements ne sont pas signalés.
+- Analyse indicative, fondée sur des motifs textuels : elle ne modifie aucun fichier et ne remplace pas un test en jeu.
+
 ## 2026-09-25
 
 ### Noms affichés des copies
